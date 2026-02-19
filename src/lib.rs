@@ -1,7 +1,7 @@
 #![allow(unused)]
+use rand::{Rng, distr::Alphanumeric};
 use std::error::Error;
 use std::io::prelude::*;
-use rand::{distr::Alphanumeric, Rng};
 
 pub enum Command {
     Send,
@@ -10,9 +10,14 @@ pub enum Command {
 
 pub struct Config {
     command: Command,
-    files: Option<Vec<String>>
+    files: Option<Vec<String>>,
 }
 
+pub struct Filedata{
+    pub name: String,
+    pub file_size: u32, 
+    pub file_type: String
+}
 
 impl Config {
     pub fn new(args: &[String]) -> Result<Config, &'static str> {
@@ -25,21 +30,21 @@ impl Config {
                 if args.len() < 3 {
                     Err("Invalid arguments: select files for transfer")
                 } else {
-                    Ok(Config { command: Command::Send, files: Some(args[1..].to_vec()) })
+                    Ok(Config {
+                        command: Command::Send,
+                        files: Some(args[1..].to_vec()),
+                    })
                 }
             }
 
-            "receive" => {
-                Ok(Config { command: Command::Receive, files: None })
-            }
+            "receive" => Ok(Config {
+                command: Command::Receive,
+                files: None,
+            }),
 
-            _ => {
-                Err("Invalid arguments provided")
-            }
-
+            _ => Err("Invalid arguments provided"),
         }
     }
-
 }
 
 pub fn generate_hash() -> String {

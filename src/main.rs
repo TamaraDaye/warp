@@ -12,13 +12,17 @@ fn main() {
 
     println!("server listening on 127.0.0.1:8080");
 
-    match server.accept() {
-        Ok((stream, addr)) => {
-            println!("{:?}", addr);
-            handle_client(stream);
-        }
-        Err(e) => {
-            eprintln!("Client terminated request {:?}", e)
+    let mut connections: Vec<&TcpStream> = vec![];
+
+    for stream in server.incoming() {
+        match stream {
+            Ok(stream) => {
+                handle_client(stream);
+            }
+
+            Err(e) => {
+                println!("connection failed")
+            }
         }
     }
 }

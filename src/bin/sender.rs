@@ -1,51 +1,42 @@
 #![allow(unused)]
-use cli_tool::{Command, Config, generate_hash};
-use core::error;
-use std::{env, process, thread};
-use std::fs::File;
-use std::io::{Read, BufRead, BufReader, Write, Error};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::io::prelude::*;
+use std::net::{TcpStream, TcpListener};
+use std::thread;
 use spake2::{Ed25519Group, Identity, Password, Spake2};
+use cli_tool::{generate_hash, Filedata};
 
-struct FileData {
-    file_name: String,
-    file_size: u64,
-    file_type: String,
+fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8000").unwrap();
+    let password: String = generate_hash();
+    println!("{password}");
+    let (s1, outbound_msg) = Spake2::<Ed25519Group>::start_a(
+        &Password::new(b"password"),
+        &Identity::new(b"client id string"),
+        &Identity::new(b"server id string"),
+    );
+
+    let mut file = Filedata{
+        name: String::from("Hello.txt"),
+        file_type: String::from(".text"),
+        file_size: 78
+    };
+
+    let mut data: Vec<u8> = vec![18];
+    data.push(9);
+    data.extend_from_slice(file.name.as_bytes());
+    data.push(5);
+    data.extend_from_slice(file.file_type.as_bytes());
+
+     loop {
+        match listener.accept() {
+            Ok((mut stream, addr)) => {
+                println!("new client: {addr:?}");
+                stream.write_all(password.as_bytes());
+                stream.write_all(&data);
+            },
+            Err(e) => println!("couldn't get a client : {e:?}")
+        };
+    }
+    Ok(())
 }
-
-fn main() {
-    let args : Vec<String> = env::args().collect();
-    let config = Config::new(&args);
-}
-
-fn send_files() -> Result<bool, &'static str> {
-    let Password = generate_hash();
-
-    let server = TcpListener::bind("127.0.0.1:8201");
-
-    todo!()
-}
-
-fn encrypt_server(stream: &mut TcpStream, server_password: String) -> Result<String, dyn std::error::Error> {
-    let (s1, outbound_msg)= Spake2::<Ed25519Group>::start_b(
-        &Password::new(server_password.as_bytes()),
-        &Identity::new(b"file-receiver"),
-        &Identity::new(b"file-sender"),
-        );
-
-    stream.write_all(&outbound_msg).unwrap();
-
-    let mut peer_msg = [0u8; 33];
-    stream.read_exact(&mut peer_msg).unwrap();
-
-    let shared_key = s1.finish(&peer_msg).unwrap();
-
-    let key = String::from_utf8_lossy(&shared_key);
-    
-
-}
-
-
-
-
-
+ 
