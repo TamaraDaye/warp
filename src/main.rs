@@ -1,47 +1,40 @@
 #![allow(unused)]
-use rand::{Rng, distr::Alphanumeric};
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process;
-use std::{env, io};
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
+use std::{io, env};
+use std::error::Error;
 
-    let server = TcpListener::bind("127.0.0.1:8080").expect("Couldn't bind");
+use cli_tool::*;
 
-    println!("server listening on 127.0.0.1:8080");
 
-    let mut connections: Vec<&TcpStream> = vec![];
+fn main() -> Result<(), Box<dyn Error>>{
+    // if let Ok(args) = parse_args() {
+    //     println!("{:?}", args)
+    // }
 
-    for stream in server.incoming() {
-        match stream {
-            Ok(stream) => {
-                handle_client(stream);
-            }
+    test_enum();
+    Ok(())
 
-            Err(e) => {
-                println!("connection failed")
-            }
-        }
+}
+
+// fn parse_args() -> Result<Vec<String>, io::Error> {
+//     let mut args_iter = env::args().skip(1);
+//     todo!()
+// //BUG:
+// }
+
+fn start(conifg: Config) -> Result<WarpApp, io::Error> {
+    todo!()
+}
+
+fn get_files(files: Vec<String>) -> Result<Vec<FileData>, io::Error>{
+    todo!()
+}
+
+
+fn test_enum (){
+    let mut code = ResultCode::Ok(200);
+    if let ResultCode::Ok(val) = code {
+        print!("{val}");
     }
 }
 
-fn handle_client(mut stream: TcpStream) {
-    let mut buffer = [0; 1024];
-
-    loop {
-        let bytes_read = stream.read(&mut buffer).expect("Failed to stream");
-        if bytes_read == 0 {
-            println!("terminated connection");
-            break;
-        }
-        let message = String::from_utf8_lossy(&buffer[..bytes_read]);
-        println!("Received {}", message);
-        let mut input = String::from("");
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Couldn't receive user input");
-        stream.write_all(input.trim().as_bytes());
-    }
-}

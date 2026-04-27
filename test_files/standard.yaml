@@ -1,0 +1,11 @@
+another:
+  -make: will
+  -can: false
+
+some:
+  -standard: file
+  -with: 20
+  -json:
+    name: JavaScript Object Notation
+    type: great
+    born: 2001
