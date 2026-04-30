@@ -1,21 +1,14 @@
 #![allow(unused)]
 
-use std::error::Error;
+use anyhow::{anyhow, Context, Result};
+use std::fmt::format;
+use std::fs::{self, File};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::prelude::*;
 use std::{env, io};
 
 use cli_tool::*;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    Ok(())
-}
-
-
-fn start(conifg: Config) -> Result<WarpApp, io::Error> {
-    todo!()
-}
-
-fn get_files(files: Vec<String>) -> Result<Vec<FileData>, io::Error> {
-    todo!()
+fn main()  {
 }

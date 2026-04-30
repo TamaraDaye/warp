@@ -1,3 +1,1 @@
-fn accept () {
-
-}
+fn accept() {}

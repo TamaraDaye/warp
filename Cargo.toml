@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.102"
 local-ip-address = "0.6.8"
 rand = "0.9.2"
 rustls = "0.23.35"
 rustls-pemfile = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 spake2 = "0.4.0"
+thiserror = "2.0.18"

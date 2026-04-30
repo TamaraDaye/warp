@@ -3,15 +3,18 @@ use rand::{distr::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::error::Error;
-use std::fmt::write;
+use std::fmt::{format, write};
 use std::io;
 use std::io::prelude::*;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{AddrParseError, SocketAddr, TcpStream};
+use std::num::ParseIntError;
 use std::path::PathBuf;
+use thiserror::Error;
 
 pub mod receiver;
 pub mod sender;
 
+#[derive(Debug)]
 pub enum CliArgs {
     Send {
         target_peer: SocketAddr,
@@ -23,20 +26,30 @@ pub enum CliArgs {
 }
 
 //Enum for specifying which type of operation the bootstrapped app will be performing
+
+pub struct Files(pub PathBuf, pub FileData);
+
 pub enum AppRole {
-    Client {
-        listener: std::net::TcpListener,
-        connections: Vec<Connection<ReceiverState>>,
-    },
-    Server {
-        target_peer: std::net::SocketAddr,
-        files: Vec<FileData>,
-        connections: Vec<Connection<SenderState>>,
-    },
+    Client {},
+    Server {},
+}
+
+pub struct Sender {
+    target_peer: std::net::SocketAddr,
+    files: Vec<Files>,
+    connections: Vec<Connection<SenderState>>,
+    state: SenderState,
+}
+
+pub struct Receiver {
+    listener: std::net::TcpListener,
+    connections: Vec<Connection<ReceiverState>>,
+    state: ReceiverState,
 }
 
 //Represents possible states the Receiver of the files would be after connection established
 pub enum ReceiverState {
+    Initial, 
     AwaitingHeader,
     AwaitingMetadata { metadata_size: u64 },
     RecevingFiles { transfer_metadata: TransferContext },
@@ -46,6 +59,7 @@ pub enum ReceiverState {
 
 //Represents possible states the Sender would be after establishing the connection
 pub enum SenderState {
+    Initial, 
     SendingHeader,
     SendingMetadata { metadata_size: u64 },
     SendingFiles {},
@@ -64,19 +78,82 @@ pub struct TransferContext {
     bytes_tranferred: u64,
 }
 
-pub struct WarpApp {
-    app_role: AppRole,
-    config: Config,
+pub struct WarpApp<Role> {
+    pub app_role: Role,
+    pub config: Option<Config>,
 }
 
-impl WarpApp {
-    fn accept_connection(&self) -> Result<Connection<ReceiverState>, io::Error> {
-        todo!()
-    }
+impl WarpApp<Sender> {
+    fn new(target_peer: std::net::SocketAddr, files: Vec<std::path::PathBuf>) -> Result<Self, WarpError> {
+        let metadata = get_file_data(files)?;
 
-    fn start_connection(&self) -> Result<Connection<SenderState>, io::Error> {
+        let app = WarpApp {
+            app_role: Sender {
+                target_peer,
+                files: metadata,
+                connections: vec![],
+                state: SenderState::Initial,
+            },
+            config: None,
+        };
+
+        Ok(app)
+    }
+}
+
+impl WarpApp<Sender> {
+    fn send(&self) -> Result<Connection<SenderState>, io::Error> {
         todo!()
     }
+}
+
+impl WarpApp<Receiver> {
+    fn new(listener_port: u16) -> Result<Self, WarpError> {
+        let addr = std::net::TcpListener::bind(format!("127.0.0.1:{}", listener_port))
+            .map_err(WarpError::ReceiverError)?;
+        let app = WarpApp {
+            app_role: Receiver {
+                listener: addr,
+                connections: vec![],
+                state: ReceiverState::Initial,
+            },
+            config: None,
+        };
+
+        Ok(app)
+    }
+    fn receive(&self) -> Result<Connection<ReceiverState>, io::Error> {
+        todo!()
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum WarpError {
+    #[error("could not open file '{filename}'")]
+    FileOpenError {
+        filename: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Could not read file '{filename}'")]
+    FileUnreadableError {
+        filename: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("could not parse port number")]
+    PortParseError(#[source] ParseIntError),
+
+    #[error("Invalid address could not parse")]
+    ReceiverError(#[source] std::io::Error),
+
+    #[error("Not a valid file")]
+    InvalidFile(String),
+
+    #[error("")]
+    ParseError(String),
 }
 
 pub struct Config {
@@ -86,7 +163,7 @@ pub struct Config {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileData {
     pub name: String,
-    pub file_size: u32,
+    pub file_size: u64,
     pub file_type: String,
 }
 
@@ -105,97 +182,145 @@ pub fn generate_hash() -> String {
     hash
 }
 
-#[derive(Debug)]
-pub struct Color {
-    r: u32,
-    g: u32,
-    b: u32,
-}
+pub fn parse_args(
+    mut args_into_iter: impl IntoIterator<Item = String>,
+) -> Result<CliArgs, WarpError> {
+    let mut args_iter = args_into_iter.into_iter();
 
-#[derive(Debug)]
-pub enum ResultCode {
-    Ok(u32),
-    NotFound(u32),
-    Teapot(u32),
-    ErrorColor(Color),
-}
+    let _program_name = args_iter.next();
 
-fn parse_args(mut args_iter: impl Iterator<Item = String>) -> Result<CliArgs, Box<dyn Error>> {
-    let command = args_iter.next();
+    let command = args_iter
+        .next()
+        .ok_or_else(|| WarpError::ParseError("No Command was provided".to_string()))?;
 
-    match command.as_deref() {
-        Some("send") => {
-            let mut target = args_iter.next();
+    match command.as_ref() {
+        "send" => {
+            let recv: SocketAddr = args_iter
+                .next()
+                .ok_or_else(|| {
+                    WarpError::ParseError("Target ip address was not provided".to_string())
+                })?
+                .parse()
+                .map_err(|e| WarpError::ParseError(format!("Target ip unavailable: {}", e)))?;
 
-            let recv_addr: SocketAddr;
+            let files: Vec<PathBuf> = args_iter.map(|f| PathBuf::from(f.trim())).collect();
 
-            if let Some(addr) = target {
-                recv_addr = addr.parse::<SocketAddr>()?;
-            } else {
-                return Err("Please specify a receiver address".into());
+            if files.is_empty() {
+                return Err(WarpError::ParseError(
+                    "Please provide a file(s) to transfer".to_string(),
+                ));
             }
 
-            let files: Vec<PathBuf> = args_iter.map(|f| PathBuf::from(f)).collect();
-
-            assert!(!files.is_empty());
-
             Ok(CliArgs::Send {
-                target_peer: recv_addr,
+                target_peer: recv,
                 files,
             })
         }
 
-        Some("get") => {
-            let port: u16;
-            if let Some(p) = args_iter.next() {
-                port = p.parse()?;
-            } else {
-                return Err("Please specify a port to listen on and receive".into());
-            };
+        "receive" => {
+            let port: u16 = args_iter
+                .next()
+                .ok_or_else(|| WarpError::ParseError("No Port Number was provided".to_string()))?
+                .parse()
+                .map_err(|e| {
+                    WarpError::ParseError(format!("Invalid port number provided: {}", e))
+                })?;
+
             Ok(CliArgs::Receive {
                 listener_port: port,
             })
         }
 
-        _ => Err("Please provide a valid argument".into()),
+        _ => Err(WarpError::ParseError(
+            "Please provide a valid command [send][receive]".to_string(),
+        )),
     }
+}
+
+fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, WarpError> {
+    let mut metadata: Vec<Files> = Vec::new();
+
+    for f in file_paths {
+        let path_str = f.to_string_lossy().to_string();
+
+        let data = f.metadata().map_err(|io_err| WarpError::FileOpenError {
+            filename: path_str.clone(),
+            source: io_err,
+        })?;
+
+        let name = f
+            .file_name()
+            .ok_or(WarpError::InvalidFile(format!(
+                "File doesn't exist {}",
+                path_str
+            )))?
+            .to_string_lossy()
+            .to_string();
+
+        let file_type = f
+            .extension()
+            .ok_or(WarpError::InvalidFile(format!(
+                "File type cannot be deduced {}",
+                path_str
+            )))?
+            .to_string_lossy()
+            .to_string();
+
+        metadata.push(Files(
+            f.to_owned(),
+            FileData {
+                name,
+                file_type,
+                file_size: data.len(),
+            },
+        ));
+    }
+
+    Ok(metadata)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Context, Result};
 
     #[test]
-    fn test_valid_send_command() {
+    fn test_valid_send_command() -> Result<()> {
         let mock_inputs = vec![
             "send".to_string(),
-            "192.168.1.5:8080".to_string(),
+            "4311".to_string(),
             "data.txt".to_string(),
             "hello.py".to_string(),
             "welcome.py".to_string(),
         ];
 
-
-        let result = parse_args(mock_inputs.into_iter());
+        let result = parse_args(mock_inputs);
 
         assert!(result.is_ok());
 
-        if let Ok(CliArgs::Send { target_peer, files }) = result {
+        if let Ok(CliArgs::Send {
+            ref target_peer,
+            ref files,
+        }) = result
+        {
             assert_eq!(target_peer.ip().to_string(), "192.168.1.5");
             assert_eq!(files[0].to_str().unwrap(), "data.txt");
-        } else {
-            panic!("Expected CliArgs::Send variant!")
+            println!("{:?}", result)
         }
+        Ok(())
     }
 
     #[test]
-    fn test_valid_get_command() {
-        let mock_inputs = vec!["get".to_string(), "4311".to_string()];
+    fn test_valid_get_command() -> Result<()> {
+        let mock_inputs = vec!["receive".to_string(), "4311".to_string()];
 
-        let result = parse_args(mock_inputs.into_iter());
+        let result = parse_args(mock_inputs)?;
 
-        assert!(result.is_ok());
+        Ok(())
     }
 
+    #[test]
+    fn parse_files() -> Result<()> {
+        Ok(())
+    }
 }
-
