@@ -1,5 +1,8 @@
 #![allow(unused)]
 use argon2::Argon2;
+use argon2::password_hash::rand_core::RngCore;
+use chacha20poly1305::aead::{Aead, OsRng};
+use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 use rand::RngCore;
 use rand::{distr::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
@@ -154,8 +157,18 @@ impl WarpApp<FileSender> {
 }
 
 impl WarpApp<FileSender> {
-    fn send(&self) -> Result<Connection<SenderState>, io::Error> {
-        todo!()
+    fn send(&self, password: String) -> Result<(), io::Error> {
+        let mut stream = std::net::TcpStream::connect(self.role.target_peer)?;
+
+        let mut salt = [0u8; 16];
+
+        stream.read_exact(&mut salt)?;
+
+        let sender_key = derive_encryption_key(&password, &salt);
+
+        let mut write_sream = stream.try_clone();
+
+        Ok(())
     }
 }
 
@@ -184,7 +197,11 @@ impl WarpApp<FileReceiver> {
 
         let receiver_key = derive_encryption_key(&password, &salt);
 
-        let (mut stream, addr) = self.role.listener.accept().map_err(WarpError::ReceiverError)?;
+        let (mut stream, addr) = self
+            .role
+            .listener
+            .accept()
+            .map_err(WarpError::ReceiverError)?;
 
         stream.write_all(&salt).unwrap();
 
@@ -289,7 +306,7 @@ fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, WarpError> {
     Ok(metadata)
 }
 
-pub fn derive_encryption_key(password: &str, salt: &[u8; 16]) -> [u8; 32] {
+fn derive_encryption_key(password: &String, salt: &[u8; 16]) -> [u8; 32] {
     let argon2 = Argon2::default();
 
     let mut key = [0u8; 32];
@@ -301,7 +318,7 @@ pub fn derive_encryption_key(password: &str, salt: &[u8; 16]) -> [u8; 32] {
     key
 }
 
-pub fn generate_hash() -> String {
+fn generate_hash() -> String {
     let hash: String = rand::rng()
         .sample_iter(&Alphanumeric)
         .take(7)
@@ -309,6 +326,22 @@ pub fn generate_hash() -> String {
         .collect();
 
     hash
+}
+
+fn encrypt_payload(password_hash: &[u8; 32], plaintext: &[u8]) -> (Vec<u8>, [u8; 24]) {
+    let key = Key::from_slice(password_hash);
+
+    let cipher = XChaCha20Poly1305::new(key);
+
+    let mut raw_nonce = [0u8; 24];
+
+    OsRng.fill_bytes(&mut raw_nonce);
+
+    let nonce = XNonce::from_slice(&raw_nonce);
+
+    let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failed");
+
+    (ciphertext, raw_nonce)
 }
 
 #[cfg(test)]
