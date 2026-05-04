@@ -1,14 +1,17 @@
 #![allow(unused)]
+use argon2::Argon2;
+use rand::RngCore;
 use rand::{distr::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::error::Error;
 use std::fmt::{format, write};
 use std::io;
 use std::io::prelude::*;
-use std::net::{AddrParseError, SocketAddr, TcpStream};
+use std::net::{AddrParseError, SocketAddr, TcpListener, TcpStream};
 use std::num::ParseIntError;
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
+use std::{env, thread};
 use thiserror::Error;
 
 pub mod receiver;
@@ -29,19 +32,14 @@ pub enum CliArgs {
 
 pub struct Files(pub PathBuf, pub FileData);
 
-pub enum AppRole {
-    Client {},
-    Server {},
-}
-
-pub struct Sender {
+pub struct FileSender {
     target_peer: std::net::SocketAddr,
     files: Vec<Files>,
     connections: Vec<Connection<SenderState>>,
     state: SenderState,
 }
 
-pub struct Receiver {
+pub struct FileReceiver {
     listener: std::net::TcpListener,
     connections: Vec<Connection<ReceiverState>>,
     state: ReceiverState,
@@ -49,7 +47,7 @@ pub struct Receiver {
 
 //Represents possible states the Receiver of the files would be after connection established
 pub enum ReceiverState {
-    Initial, 
+    Initial,
     AwaitingHeader,
     AwaitingMetadata { metadata_size: u64 },
     RecevingFiles { transfer_metadata: TransferContext },
@@ -59,7 +57,7 @@ pub enum ReceiverState {
 
 //Represents possible states the Sender would be after establishing the connection
 pub enum SenderState {
-    Initial, 
+    Initial,
     SendingHeader,
     SendingMetadata { metadata_size: u64 },
     SendingFiles {},
@@ -76,55 +74,6 @@ pub struct TransferContext {
     meta: FileData,
     file_handle: std::fs::File,
     bytes_tranferred: u64,
-}
-
-pub struct WarpApp<Role> {
-    pub app_role: Role,
-    pub config: Option<Config>,
-}
-
-impl WarpApp<Sender> {
-    fn new(target_peer: std::net::SocketAddr, files: Vec<std::path::PathBuf>) -> Result<Self, WarpError> {
-        let metadata = get_file_data(files)?;
-
-        let app = WarpApp {
-            app_role: Sender {
-                target_peer,
-                files: metadata,
-                connections: vec![],
-                state: SenderState::Initial,
-            },
-            config: None,
-        };
-
-        Ok(app)
-    }
-}
-
-impl WarpApp<Sender> {
-    fn send(&self) -> Result<Connection<SenderState>, io::Error> {
-        todo!()
-    }
-}
-
-impl WarpApp<Receiver> {
-    fn new(listener_port: u16) -> Result<Self, WarpError> {
-        let addr = std::net::TcpListener::bind(format!("127.0.0.1:{}", listener_port))
-            .map_err(WarpError::ReceiverError)?;
-        let app = WarpApp {
-            app_role: Receiver {
-                listener: addr,
-                connections: vec![],
-                state: ReceiverState::Initial,
-            },
-            config: None,
-        };
-
-        Ok(app)
-    }
-    fn receive(&self) -> Result<Connection<ReceiverState>, io::Error> {
-        todo!()
-    }
 }
 
 #[derive(Debug, Error)]
@@ -156,6 +105,12 @@ pub enum WarpError {
     ParseError(String),
 }
 
+pub enum NetworkError {}
+
+pub enum ParseError {}
+
+pub enum DiskError {}
+
 pub struct Config {
     worker_threads: usize,
 }
@@ -172,14 +127,69 @@ pub struct Connection<T: ConnectionState> {
     stream: TcpStream,
     state: T,
 }
+pub struct WarpApp<Role> {
+    pub role: Role,
+    pub config: Option<Config>,
+}
 
-pub fn generate_hash() -> String {
-    let hash: String = rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(7)
-        .map(char::from)
-        .collect();
-    hash
+impl WarpApp<FileSender> {
+    fn new(
+        target_peer: std::net::SocketAddr,
+        files: Vec<std::path::PathBuf>,
+    ) -> Result<Self, WarpError> {
+        let metadata = get_file_data(files)?;
+
+        let app = WarpApp {
+            role: FileSender {
+                target_peer,
+                files: metadata,
+                connections: vec![],
+                state: SenderState::Initial,
+            },
+            config: None,
+        };
+
+        Ok(app)
+    }
+}
+
+impl WarpApp<FileSender> {
+    fn send(&self) -> Result<Connection<SenderState>, io::Error> {
+        todo!()
+    }
+}
+
+impl WarpApp<FileReceiver> {
+    fn new(listener_port: u16) -> Result<Self, WarpError> {
+        let addr = std::net::TcpListener::bind(format!("127.0.0.1:{}", listener_port))
+            .map_err(WarpError::ReceiverError)?;
+        let app = WarpApp {
+            role: FileReceiver {
+                listener: addr,
+                connections: vec![],
+                state: ReceiverState::Initial,
+            },
+            config: None,
+        };
+
+        Ok(app)
+    }
+
+    fn receive(&mut self) -> Result<(), WarpError> {
+        let password = generate_hash();
+
+        let mut salt = [0u8; 16];
+
+        rand::rng().fill_bytes(&mut salt);
+
+        let receiver_key = derive_encryption_key(&password, &salt);
+
+        let (mut stream, addr) = self.role.listener.accept().map_err(WarpError::ReceiverError)?;
+
+        stream.write_all(&salt).unwrap();
+
+        Ok(())
+    }
 }
 
 pub fn parse_args(
@@ -277,6 +287,28 @@ fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, WarpError> {
     }
 
     Ok(metadata)
+}
+
+pub fn derive_encryption_key(password: &str, salt: &[u8; 16]) -> [u8; 32] {
+    let argon2 = Argon2::default();
+
+    let mut key = [0u8; 32];
+
+    argon2
+        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .expect("Argon2 failed to allocate memory for hashing");
+
+    key
+}
+
+pub fn generate_hash() -> String {
+    let hash: String = rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(7)
+        .map(char::from)
+        .collect();
+
+    hash
 }
 
 #[cfg(test)]
