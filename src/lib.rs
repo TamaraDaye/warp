@@ -1,11 +1,13 @@
 #![allow(unused)]
 use argon2::Argon2;
-use argon2::password_hash::rand_core::RngCore;
-use chacha20poly1305::aead::{Aead, OsRng};
-use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
-use rand::RngCore;
-use rand::{distr::Alphanumeric, Rng};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    Key, XChaCha20Poly1305, XNonce,
+};
 use serde::{Deserialize, Serialize};
+
+use rand::{distr::Alphanumeric, RngExt};
+use rand_core::{OsRng, RngCore};
 use std::error::Error;
 use std::fmt::{format, write};
 use std::io;
@@ -38,13 +40,11 @@ pub struct Files(pub PathBuf, pub FileData);
 pub struct FileSender {
     target_peer: std::net::SocketAddr,
     files: Vec<Files>,
-    connections: Vec<Connection<SenderState>>,
     state: SenderState,
 }
 
 pub struct FileReceiver {
     listener: std::net::TcpListener,
-    connections: Vec<Connection<ReceiverState>>,
     state: ReceiverState,
 }
 
@@ -130,6 +130,29 @@ pub struct Connection<T: ConnectionState> {
     stream: TcpStream,
     state: T,
 }
+
+impl Connection<SenderState> {
+    fn encrypt_payload(
+        password_hash: &[u8; 32],
+        plaintext: &[u8],
+        nonce: [u8; 24],
+    ) -> (Vec<u8>, [u8; 24]) {
+        let key = Key::from_slice(password_hash);
+
+        let cipher = XChaCha20Poly1305::new(key);
+
+        let mut raw_nonce = [0u8; 24];
+
+        OsRng.fill_bytes(&mut raw_nonce);
+
+        let nonce = XNonce::from_slice(&raw_nonce);
+
+        let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failed");
+
+        (ciphertext, raw_nonce)
+    }
+}
+
 pub struct WarpApp<Role> {
     pub role: Role,
     pub config: Option<Config>,
@@ -146,7 +169,6 @@ impl WarpApp<FileSender> {
             role: FileSender {
                 target_peer,
                 files: metadata,
-                connections: vec![],
                 state: SenderState::Initial,
             },
             config: None,
@@ -179,7 +201,6 @@ impl WarpApp<FileReceiver> {
         let app = WarpApp {
             role: FileReceiver {
                 listener: addr,
-                connections: vec![],
                 state: ReceiverState::Initial,
             },
             config: None,
@@ -193,7 +214,7 @@ impl WarpApp<FileReceiver> {
 
         let mut salt = [0u8; 16];
 
-        rand::rng().fill_bytes(&mut salt);
+        OsRng.fill_bytes(&mut salt);
 
         let receiver_key = derive_encryption_key(&password, &salt);
 
@@ -326,22 +347,6 @@ fn generate_hash() -> String {
         .collect();
 
     hash
-}
-
-fn encrypt_payload(password_hash: &[u8; 32], plaintext: &[u8]) -> (Vec<u8>, [u8; 24]) {
-    let key = Key::from_slice(password_hash);
-
-    let cipher = XChaCha20Poly1305::new(key);
-
-    let mut raw_nonce = [0u8; 24];
-
-    OsRng.fill_bytes(&mut raw_nonce);
-
-    let nonce = XNonce::from_slice(&raw_nonce);
-
-    let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failed");
-
-    (ciphertext, raw_nonce)
 }
 
 #[cfg(test)]
