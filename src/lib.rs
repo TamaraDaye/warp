@@ -1,12 +1,13 @@
 #![allow(unused)]
 use argon2::Argon2;
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     Key, XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit},
 };
 use serde::{Deserialize, Serialize};
 
-use rand::{distr::Alphanumeric, RngExt};
+use errors::{DiskError, NetworkError, ParseError, WarpError};
+use rand::{RngExt, distr::Alphanumeric};
 use rand_core::{OsRng, RngCore};
 use std::error::Error;
 use std::fmt::{format, write};
@@ -18,14 +19,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::{env, thread};
 use thiserror::Error;
-use errors::{WarpError, NetworkError, ParseError, DiskError};
-
 
 // Common structs
+pub mod crypto;
+pub mod errors;
 pub mod receiver;
 pub mod sender;
-pub mod errors;
-pub mod crypto;
 
 #[derive(Debug)]
 pub enum CliArgs {
@@ -51,9 +50,8 @@ pub struct WarpApp<State> {
     pub config: Option<Config>,
 }
 
-
 pub struct HandshakeState {
-    pub stream: TcpStream
+    pub stream: TcpStream,
 }
 
 pub struct Config {
@@ -66,28 +64,6 @@ pub struct FileData {
     pub file_size: u64,
     pub file_type: String,
 }
-
-fn encrypt_payload(
-    password_hash: &[u8; 32],
-    plaintext: &[u8],
-    nonce: [u8; 24],
-) -> (Vec<u8>, [u8; 24]) {
-    let key = Key::from_slice(password_hash);
-
-    let cipher = XChaCha20Poly1305::new(key);
-
-    let mut raw_nonce = [0u8; 24];
-
-    OsRng.fill_bytes(&mut raw_nonce);
-
-    let nonce = XNonce::from_slice(&raw_nonce);
-
-    let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failed");
-
-    (ciphertext, raw_nonce)
-}
-
-
 
 pub fn parse_args(
     mut args_into_iter: impl IntoIterator<Item = String>,
@@ -104,11 +80,9 @@ pub fn parse_args(
         "send" => {
             let recv: SocketAddr = args_iter
                 .next()
-                .ok_or_else(|| {
-                    ParseError::Arg("Target ip address was not provided".to_string())
-                })?
+                .ok_or_else(|| ParseError::Arg("Target ip address was not provided".to_string()))?
                 .parse()
-                .map_err(|e|ParseError::InvalidIpAddress(e))?;
+                .map_err(|e| ParseError::InvalidIpAddress(e))?;
 
             let files: Vec<PathBuf> = args_iter.map(|f| PathBuf::from(f.trim())).collect();
 
@@ -127,11 +101,9 @@ pub fn parse_args(
         "receive" => {
             let port: u16 = args_iter
                 .next()
-                .ok_or_else(||ParseError::Arg("No Port Number was provided".to_string()))?
+                .ok_or_else(|| ParseError::Arg("No Port Number was provided".to_string()))?
                 .parse()
-                .map_err(|e| {
-                   ParseError::PortParseError(e)
-                })?;
+                .map_err(|e| ParseError::PortParseError(e))?;
 
             Ok(CliArgs::Receive {
                 listener_port: port,
@@ -150,14 +122,17 @@ fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, DiskError> {
     for f in file_paths {
         let path_str = f.to_string_lossy().to_string();
 
-        let data = f.metadata().map_err(|io_err|DiskError::FileOpenError {
+        let data = f.metadata().map_err(|io_err| DiskError::FileOpenError {
             filename: path_str.clone(),
             source: io_err,
         })?;
 
         let name = f
             .file_name()
-            .ok_or(DiskError::InvalidFile(format!("invalid file name {}", path_str.clone())))?
+            .ok_or(DiskError::InvalidFile(format!(
+                "invalid file name {}",
+                path_str.clone()
+            )))?
             .to_string_lossy()
             .to_string();
 
@@ -181,18 +156,6 @@ fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, DiskError> {
     }
 
     Ok(metadata)
-}
-
-fn derive_encryption_key(password: &String, salt: &[u8; 16]) -> [u8; 32] {
-    let argon2 = Argon2::default();
-
-    let mut key = [0u8; 32];
-
-    argon2
-        .hash_password_into(password.as_bytes(), salt, &mut key)
-        .expect("Argon2 failed to allocate memory for hashing");
-
-    key
 }
 
 fn generate_hash() -> String {

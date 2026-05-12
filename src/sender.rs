@@ -1,10 +1,8 @@
 use std::net::TcpStream;
 
-use crate::WarpError;
+use crate::{Files, errors::NetworkError};
 
-use crate::Files;
-
-use super::WarpApp;
+use super::{WarpApp, FileData};
 
 pub struct SenderInitial {
     pub target_peer: std::net::SocketAddr,
@@ -25,8 +23,8 @@ pub struct SenderStreaming {
 }
 
 impl WarpApp<SenderInitial> {
-    pub fn connect(self) -> Result<WarpApp<SenderHandshaking>, WarpError> {
-        let stream = TcpStream::connect(self.role.target_peer)?;
+    pub fn connect(self) -> Result<WarpApp<SenderHandshaking>, NetworkError> {
+        let stream = TcpStream::connect(self.role.target_peer).map_err(NetworkError::ReceiverError)?;
 
         Ok(WarpApp {
             role: SenderHandshaking {
@@ -38,6 +36,10 @@ impl WarpApp<SenderInitial> {
         })
     }
 }
-impl WarpApp<SenderHandshaking> {}
+impl WarpApp<SenderHandshaking> {
+    fn handshake(self) -> Result<WarpApp<SenderStreaming>, NetworkError> {
+        todo!()
+    }
+}
 
 impl WarpApp<SenderStreaming> {}

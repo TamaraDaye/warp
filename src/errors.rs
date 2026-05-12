@@ -22,9 +22,8 @@ pub enum ParseError {
     #[error("")]
     Arg(String),
 
-
     #[error("could not parse provided ip address")]
-    InvalidIpAddress(#[source] AddrParseError)
+    InvalidIpAddress(#[source] AddrParseError),
 }
 
 #[derive(Debug, Error)]
@@ -44,6 +43,5 @@ pub enum DiskError {
     },
 
     #[error("Invalid file name")]
-    InvalidFile(String)
-    
+    InvalidFile(String),
 }
