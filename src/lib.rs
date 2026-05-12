@@ -18,9 +18,14 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::{env, thread};
 use thiserror::Error;
+use errors::{WarpError, NetworkError, ParseError, DiskError};
 
+
+// Common structs
 pub mod receiver;
 pub mod sender;
+pub mod errors;
+pub mod crypto;
 
 #[derive(Debug)]
 pub enum CliArgs {
@@ -33,45 +38,7 @@ pub enum CliArgs {
     },
 }
 
-//Enum for specifying which type of operation the bootstrapped app will be performing
-
-pub struct Files(pub PathBuf, pub FileData);
-
-pub struct FileSender {
-    target_peer: std::net::SocketAddr,
-    files: Vec<Files>,
-    state: SenderState,
-}
-
-pub struct FileReceiver {
-    listener: std::net::TcpListener,
-    state: ReceiverState,
-}
-
-//Represents possible states the Receiver of the files would be after connection established
-pub enum ReceiverState {
-    Initial,
-    AwaitingHeader,
-    AwaitingMetadata { metadata_size: u64 },
-    RecevingFiles { transfer_metadata: TransferContext },
-    Done,
-    Error,
-}
-
-//Represents possible states the Sender would be after establishing the connection
-pub enum SenderState {
-    Initial,
-    SendingHeader,
-    SendingMetadata { metadata_size: u64 },
-    SendingFiles {},
-    Done,
-    Error,
-}
-
-pub trait ConnectionState {}
-
-impl ConnectionState for ReceiverState {}
-impl ConnectionState for SenderState {}
+pub struct Files(PathBuf, FileData);
 
 pub struct TransferContext {
     meta: FileData,
@@ -79,40 +46,15 @@ pub struct TransferContext {
     bytes_tranferred: u64,
 }
 
-#[derive(Debug, Error)]
-pub enum WarpError {
-    #[error("could not open file '{filename}'")]
-    FileOpenError {
-        filename: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("Could not read file '{filename}'")]
-    FileUnreadableError {
-        filename: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("could not parse port number")]
-    PortParseError(#[source] ParseIntError),
-
-    #[error("Invalid address could not parse")]
-    ReceiverError(#[source] std::io::Error),
-
-    #[error("Not a valid file")]
-    InvalidFile(String),
-
-    #[error("")]
-    ParseError(String),
+pub struct WarpApp<State> {
+    pub role: State,
+    pub config: Option<Config>,
 }
 
-pub enum NetworkError {}
 
-pub enum ParseError {}
-
-pub enum DiskError {}
+pub struct HandshakeState {
+    pub stream: TcpStream
+}
 
 pub struct Config {
     worker_threads: usize,
@@ -125,136 +67,53 @@ pub struct FileData {
     pub file_type: String,
 }
 
-pub struct Connection<T: ConnectionState> {
-    peer_addr: SocketAddr,
-    stream: TcpStream,
-    state: T,
+fn encrypt_payload(
+    password_hash: &[u8; 32],
+    plaintext: &[u8],
+    nonce: [u8; 24],
+) -> (Vec<u8>, [u8; 24]) {
+    let key = Key::from_slice(password_hash);
+
+    let cipher = XChaCha20Poly1305::new(key);
+
+    let mut raw_nonce = [0u8; 24];
+
+    OsRng.fill_bytes(&mut raw_nonce);
+
+    let nonce = XNonce::from_slice(&raw_nonce);
+
+    let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failed");
+
+    (ciphertext, raw_nonce)
 }
 
-impl Connection<SenderState> {
-    fn encrypt_payload(
-        password_hash: &[u8; 32],
-        plaintext: &[u8],
-        nonce: [u8; 24],
-    ) -> (Vec<u8>, [u8; 24]) {
-        let key = Key::from_slice(password_hash);
 
-        let cipher = XChaCha20Poly1305::new(key);
-
-        let mut raw_nonce = [0u8; 24];
-
-        OsRng.fill_bytes(&mut raw_nonce);
-
-        let nonce = XNonce::from_slice(&raw_nonce);
-
-        let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failed");
-
-        (ciphertext, raw_nonce)
-    }
-}
-
-pub struct WarpApp<Role> {
-    pub role: Role,
-    pub config: Option<Config>,
-}
-
-impl WarpApp<FileSender> {
-    fn new(
-        target_peer: std::net::SocketAddr,
-        files: Vec<std::path::PathBuf>,
-    ) -> Result<Self, WarpError> {
-        let metadata = get_file_data(files)?;
-
-        let app = WarpApp {
-            role: FileSender {
-                target_peer,
-                files: metadata,
-                state: SenderState::Initial,
-            },
-            config: None,
-        };
-
-        Ok(app)
-    }
-}
-
-impl WarpApp<FileSender> {
-    fn send(&self, password: String) -> Result<(), io::Error> {
-        let mut stream = std::net::TcpStream::connect(self.role.target_peer)?;
-
-        let mut salt = [0u8; 16];
-
-        stream.read_exact(&mut salt)?;
-
-        let sender_key = derive_encryption_key(&password, &salt);
-
-        let mut write_sream = stream.try_clone();
-
-        Ok(())
-    }
-}
-
-impl WarpApp<FileReceiver> {
-    fn new(listener_port: u16) -> Result<Self, WarpError> {
-        let addr = std::net::TcpListener::bind(format!("127.0.0.1:{}", listener_port))
-            .map_err(WarpError::ReceiverError)?;
-        let app = WarpApp {
-            role: FileReceiver {
-                listener: addr,
-                state: ReceiverState::Initial,
-            },
-            config: None,
-        };
-
-        Ok(app)
-    }
-
-    fn receive(&mut self) -> Result<(), WarpError> {
-        let password = generate_hash();
-
-        let mut salt = [0u8; 16];
-
-        OsRng.fill_bytes(&mut salt);
-
-        let receiver_key = derive_encryption_key(&password, &salt);
-
-        let (mut stream, addr) = self
-            .role
-            .listener
-            .accept()
-            .map_err(WarpError::ReceiverError)?;
-
-        stream.write_all(&salt).unwrap();
-
-        Ok(())
-    }
-}
 
 pub fn parse_args(
     mut args_into_iter: impl IntoIterator<Item = String>,
-) -> Result<CliArgs, WarpError> {
+) -> Result<CliArgs, ParseError> {
     let mut args_iter = args_into_iter.into_iter();
 
     let _program_name = args_iter.next();
 
     let command = args_iter
         .next()
-        .ok_or_else(|| WarpError::ParseError("No Command was provided".to_string()))?;
+        .ok_or_else(|| ParseError::Arg("No Command was provided".to_string()))?;
 
     match command.as_ref() {
         "send" => {
             let recv: SocketAddr = args_iter
                 .next()
                 .ok_or_else(|| {
-                    WarpError::ParseError("Target ip address was not provided".to_string())
+                    ParseError::Arg("Target ip address was not provided".to_string())
                 })?
                 .parse()
-                .map_err(|e| WarpError::ParseError(format!("Target ip unavailable: {}", e)))?;
+                .map_err(|e|ParseError::InvalidIpAddress(e))?;
 
             let files: Vec<PathBuf> = args_iter.map(|f| PathBuf::from(f.trim())).collect();
 
             if files.is_empty() {
-                return Err(WarpError::ParseError(
+                return Err(ParseError::Arg(
                     "Please provide a file(s) to transfer".to_string(),
                 ));
             }
@@ -268,10 +127,10 @@ pub fn parse_args(
         "receive" => {
             let port: u16 = args_iter
                 .next()
-                .ok_or_else(|| WarpError::ParseError("No Port Number was provided".to_string()))?
+                .ok_or_else(||ParseError::Arg("No Port Number was provided".to_string()))?
                 .parse()
                 .map_err(|e| {
-                    WarpError::ParseError(format!("Invalid port number provided: {}", e))
+                   ParseError::PortParseError(e)
                 })?;
 
             Ok(CliArgs::Receive {
@@ -279,35 +138,32 @@ pub fn parse_args(
             })
         }
 
-        _ => Err(WarpError::ParseError(
+        _ => Err(ParseError::Arg(
             "Please provide a valid command [send][receive]".to_string(),
         )),
     }
 }
 
-fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, WarpError> {
+fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, DiskError> {
     let mut metadata: Vec<Files> = Vec::new();
 
     for f in file_paths {
         let path_str = f.to_string_lossy().to_string();
 
-        let data = f.metadata().map_err(|io_err| WarpError::FileOpenError {
+        let data = f.metadata().map_err(|io_err|DiskError::FileOpenError {
             filename: path_str.clone(),
             source: io_err,
         })?;
 
         let name = f
             .file_name()
-            .ok_or(WarpError::InvalidFile(format!(
-                "File doesn't exist {}",
-                path_str
-            )))?
+            .ok_or(DiskError::InvalidFile(format!("invalid file name {}", path_str.clone())))?
             .to_string_lossy()
             .to_string();
 
         let file_type = f
             .extension()
-            .ok_or(WarpError::InvalidFile(format!(
+            .ok_or(DiskError::InvalidFile(format!(
                 "File type cannot be deduced {}",
                 path_str
             )))?
