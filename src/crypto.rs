@@ -1,26 +1,35 @@
 use super::*;
 
-fn encrypt_payload(
-    password_hash: &[u8; 32],
+pub fn encrypt_payload(
+    encryption_key: &[u8; 32],
+    nonce: &[u8; 24],
     plaintext: &[u8],
-    nonce: [u8; 24],
-) -> (Vec<u8>, [u8; 24]) {
-    let key = Key::from_slice(password_hash);
+) -> Result<Vec<u8>, String> {
+
+    let key = Key::from_slice(encryption_key);
+    let formatted_nonce = XNonce::from_slice(nonce);
 
     let cipher = XChaCha20Poly1305::new(key);
 
-    let mut raw_nonce = [0u8; 24];
+    cipher.encrypt(formatted_nonce, plaintext)
+        .map_err(|e| format!("Encryption failed: {}", e))
+}
+pub fn decrypt_payload(
+    encryption_key: &[u8; 32],
+    nonce: &[u8; 24],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, String> {
 
-    OsRng.fill_bytes(&mut raw_nonce);
+    let key = Key::from_slice(encryption_key);
+    let formatted_nonce = XNonce::from_slice(nonce);
 
-    let nonce = XNonce::from_slice(&raw_nonce);
+    let cipher = XChaCha20Poly1305::new(key);
 
-    let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failed");
-
-    (ciphertext, raw_nonce)
+    cipher.decrypt(formatted_nonce, ciphertext)
+        .map_err(|e| format!("Decryption failed or data corrupted: {}", e))
 }
 
-fn derive_encryption_key(password: &String, salt: &[u8; 16]) -> [u8; 32] {
+pub fn derive_encryption_key(password: String, salt: &[u8; 16]) -> [u8; 32] {
     let argon2 = Argon2::default();
 
     let mut key = [0u8; 32];
