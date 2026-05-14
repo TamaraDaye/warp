@@ -1,21 +1,23 @@
-use std::io::Read;
+use std::collections::VecDeque;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 
 use rand_core::{OsRng, RngCore};
 
+use crate::TransferContext;
 use crate::crypto::{derive_encryption_key, encrypt_payload};
-use crate::{errors::NetworkError, generate_hash, Files};
+use crate::{errors::NetworkError, generate_hash, File};
 
 use super::{FileData, WarpApp};
 
 pub struct SenderInitial {
     pub target_peer: std::net::SocketAddr,
-    pub files: Vec<Files>,
+    pub files: VecDeque<File>,
 }
 
 pub struct SenderHandshaking {
     pub stream: TcpStream,
-    pub files: Vec<Files>,
+    pub files: VecDeque<File>,
     pub salt: [u8; 16],
 }
 
@@ -23,8 +25,9 @@ pub struct SenderStreaming {
     pub stream: TcpStream,
     // pub cipher: XChaCha20poly1305,
     pub nonce: [u8; 24],
-    pub file_queue: Vec<Files>,
+    pub file_queue: VecDeque<File>,
     key: [u8; 32],
+    pub active_file: Option<TransferContext>
 }
 
 impl WarpApp<SenderInitial> {
@@ -59,6 +62,7 @@ impl WarpApp<SenderHandshaking> {
                 nonce,
                 file_queue: self.role.files,
                 key: encryption_key,
+                active_file: None
             },
             config: self.config,
         })
@@ -66,10 +70,34 @@ impl WarpApp<SenderHandshaking> {
 }
 
 impl WarpApp<SenderStreaming> {
-    fn send_header(&mut self) -> Result<(), NetworkError> {
-        let size_of_metadata =
-            std::mem::size_of_val(&self.role.file_queue[self.role.file_queue.len() - 1].1);
+    fn start_transfer(&self){}
 
-        Ok(())
+
+    fn send_header(&mut self) -> Result<(), NetworkError> {
+        let file = self.role.file_queue.pop_front();
+
+        if let Some(File(path, filedata)) = file {
+            let f = std::fs::File::open(path).map_err(NetworkError::ReceiverError)?;
+
+            if self.role.active_file.is_none() {
+                self.role.active_file = Some(TransferContext {
+                    file_handle: f, 
+                    bytes_tranferred: 0
+                });
+            }
+
+            let metadata = postcard::to_vec(&filedata)?;
+        }
     }
+
+pub fn increment_nonce(&mut self) {
+    for byte in self.role.nonce.iter_mut() {
+        let (new_value, did_overflow) = byte.overflowing_add(1);
+        
+        *byte = new_value;
+        if !did_overflow {
+            break;
+        }
+    }
+}
 }

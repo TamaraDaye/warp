@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::{env, thread};
 use thiserror::Error;
+use std::collections::VecDeque;
+use postcard;
 
 // Common structs
 pub mod crypto;
@@ -37,10 +39,9 @@ pub enum CliArgs {
     },
 }
 
-pub struct Files(PathBuf, FileData);
+pub struct File(PathBuf, FileData);
 
 pub struct TransferContext {
-    meta: FileData,
     file_handle: std::fs::File,
     bytes_tranferred: u64,
 }
@@ -116,8 +117,8 @@ pub fn parse_args(
     }
 }
 
-fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, DiskError> {
-    let mut metadata: Vec<Files> = Vec::new();
+fn get_file_data(file_paths: Vec<PathBuf>) -> Result<VecDeque<File>, DiskError> {
+    let mut metadata: VecDeque<File> = VecDeque::new();
 
     for f in file_paths {
         let path_str = f.to_string_lossy().to_string();
@@ -145,7 +146,7 @@ fn get_file_data(file_paths: Vec<PathBuf>) -> Result<Vec<Files>, DiskError> {
             .to_string_lossy()
             .to_string();
 
-        metadata.push(Files(
+        metadata.push_back(File(
             f.to_owned(),
             FileData {
                 name,

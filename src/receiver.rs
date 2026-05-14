@@ -3,7 +3,7 @@ use rand_core::{OsRng, RngCore};
 use crate::{crypto::derive_encryption_key, errors::NetworkError};
 
 use super::WarpApp;
-use std::{io::Write, net::{TcpListener, TcpStream}};
+use std::{io::{Read, Write}, net::{TcpListener, TcpStream}};
 
 pub struct ReceiverInitial {
     pub target_peer: std::net::SocketAddr,
@@ -66,7 +66,12 @@ impl WarpApp<ReceiverHandshaking> {
 }
 
 impl WarpApp<ReceiverStreaming> {
-    fn receiver_header(&mut self) {
+    fn receiver_header(&mut self) -> Result<u64, NetworkError> {
+        let mut file_metadata_size: [u8; 64]  = [0; 64];
 
+        self.role.stream.read_exact(&mut file_metadata_size)?;
+
+        file_metadata_size.into()
+        
     }
 }
